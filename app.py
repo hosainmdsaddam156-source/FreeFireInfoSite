@@ -4,7 +4,7 @@ import httpx
 import json
 from collections import defaultdict
 from functools import wraps
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from cachetools import TTLCache
 from typing import Tuple
@@ -14,6 +14,7 @@ from google.protobuf.message import Message
 from Crypto.Cipher import AES
 import base64
 import random
+import threading
 
 # === Settings ===
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
@@ -28,7 +29,7 @@ CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
 
-# === Helper Functions ===
+# === Helper Functions (আপনার পুরানো কোড একই রাখলাম) ===
 def pad(text: bytes) -> bytes:
     padding_length = AES.block_size - (len(text) % AES.block_size)
     return text + bytes([padding_length] * padding_length)
@@ -73,7 +74,7 @@ def get_account_credentials(region: str) -> str:
         except Exception as e:
             return f"ERROR: {e}"
 
-# === Token Generation ===
+# === Token Functions (একই রাখলাম) ===
 async def get_access_token(account: str):
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     payload = account + "&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
@@ -105,7 +106,7 @@ async def create_jwt(region: str):
 
 async def initialize_tokens():
     tasks = [create_jwt(r) for r in SUPPORTED_REGIONS]
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 async def refresh_tokens_periodically():
     while True:
@@ -149,45 +150,57 @@ def cached_endpoint(ttl=300):
         return wrapper
     return decorator
 
-# === Flask Routes ===
+# ====================== ROUTES ======================
+
+@app.route('/')
+def home():
+    return render_template_string("""
+    <h1>✅ Free Fire Diamond Top-Up Demo</h1>
+    <p><strong>Player Info চেক করতে এই লিংক ব্যবহার করুন:</strong></p>
+    <p><code>https://your-site.onrender.com/player-info?region=BD&uid=1234567890</code></p>
+    <p>উদাহরণ: region=BD, IND, ID, VN, TH ইত্যাদি</p>
+    <hr>
+    <p><a href="/refresh">Tokens Refresh করতে ক্লিক করুন</a></p>
+    """)
+
 @app.route('/player-info')
 @cached_endpoint()
 def get_account_info():
     region = request.args.get('region')
     uid = request.args.get('uid')
 
-    # Pehle basic validation
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
-
     if not region:
         return jsonify({"error": "Please provide REGION."}), 400
 
     try:
-        # API call
         return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
-
-        # Agar data mila toh usko beautify karke bhejo
         formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
         return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-
     except Exception as e:
-        # Agar koi error aaye toh yeh catch karega
-        return jsonify({"error": "Invalid UID or Region. Please check and try again."}), 500
+        return jsonify({"error": f"Invalid UID or Region. Error: {str(e)}"}), 500
 
-@app.route('/refresh', methods=['GET','POST'])
+@app.route('/refresh', methods=['GET', 'POST'])
 def refresh_tokens_endpoint():
     try:
         asyncio.run(initialize_tokens())
-        return jsonify({'message':'Tokens refreshed for all regions.'}),200
+        return jsonify({'message': 'Tokens refreshed for all regions.'}), 200
     except Exception as e:
-        return jsonify({'error': f'Refresh failed: {e}'}),500
+        return jsonify({'error': f'Refresh failed: {e}'}), 500
 
-# === Startup ===
-async def startup():
-    await initialize_tokens()
-    asyncio.create_task(refresh_tokens_periodically())
+# ====================== STARTUP ======================
+def start_background_tasks():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(initialize_tokens())
+    loop.create_task(refresh_tokens_periodically())
+    loop.run_forever()
 
 if __name__ == '__main__':
-    asyncio.run(startup())
+    # Local development এর জন্য
+    asyncio.run(startup()) if 'startup' in globals() else None
     app.run(host='0.0.0.0', port=5000, debug=True)
+else:
+    # Render / Production এর জন্য
+    threading.Thread(target=start_background_tasks, daemon=True).start()
